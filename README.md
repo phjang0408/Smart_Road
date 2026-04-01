@@ -51,7 +51,6 @@ refactor: 코드 리팩토링
 chore : 환경설정이나 파일이동(.gitignore나 README.md)
 style : 코드 형식이나 가독성 수정할 때 (세미콜론 누락, 들여쓰기 교정 등)
 rename : 파일 혹은 폴더명 변경
-
 ```
 
 예시:

@@ -1,24 +1,53 @@
 using System;
-using System.Windows.Forms;
+using System.Windows.Threading;
 
 namespace Smart_Road
 {
-    public class DataGenerator
+    public class DataGenerator : IDisposable
     {
-        private Random _rng = new Random();
-        private Timer _timer;
+        private readonly Random _rng;
+        private DispatcherTimer _timer;
         private int _speed = 1; // 배속 (1x, 2x, 4x)
 
+        // 상수 (매직 넘버 상수화)
+        private const int MIN_TEMPERATURE = -10;
+        private const int MAX_TEMPERATURE = 35;
+        private const int TEMP_BASE_LOW = -5;
+        private const int TEMP_BASE_HIGH = 10;
+        private const int RUSH_HOUR_START_1 = 8;
+        private const int RUSH_HOUR_END_1 = 9;
+        private const int RUSH_HOUR_START_2 = 18;
+        private const int RUSH_HOUR_END_2 = 19;
+        private const int MAX_WAITING_CARS_RUSH = 15;
+        private const int MIN_WAITING_CARS_RUSH = 5;
+        private const int MAX_WAITING_CARS = 8;
+        private const int WAITING_CARS_THRESHOLD = 10;
+        private const int MAX_VEHICLE_SPEED = 90;
+        private const int WRONG_WAY_PROBABILITY = 2;
+        private const int PEDESTRIAN_PROBABILITY = 15;
+        private const double RAINFALL_PROBABILITY = 0.3;
+        private const double MAX_WIND_SPEED = 20.0;
+        private const double FREEZING_TEMP = 0.0;
+        private const double SNOW_TEMP = 2.0;
+        private const double SNOW_RAINFALL = 5.0;
+
+        public DataGenerator(Random rng = null)
+        {
+            _rng = rng ?? new Random();
+        }
+
         // SensorData 갱신 시 발행하는 이벤트
-        public event Action<SensorData> OnSensorDataUpdated;
+        public event Action<SensorData> SensorDataUpdated;
 
         /// <summary>
         /// DataGenerator 초기화 및 Timer 시작
         /// </summary>
         public void Initialize()
         {
-            _timer = new Timer();
-            _timer.Interval = GetTimerInterval(_speed);
+            if (_timer != null) return;  // H-3: 재진입 가드
+
+            _timer = new DispatcherTimer();
+            _timer.Interval = TimeSpan.FromMilliseconds(GetTimerInterval(_speed));
             _timer.Tick += (s, e) => UpdateSensorData();
             _timer.Start();
         }
@@ -31,8 +60,16 @@ namespace Smart_Road
             if (_timer != null)
             {
                 _timer.Stop();
-                _timer.Dispose();
+                _timer = null;  // H-1: null 초기화로 dispose 상태 명시
             }
+        }
+
+        /// <summary>
+        /// 리소스 해제
+        /// </summary>
+        public void Dispose()
+        {
+            Stop();
         }
 
         /// <summary>
@@ -46,7 +83,7 @@ namespace Smart_Road
             _speed = speed;
             if (_timer != null)
             {
-                _timer.Interval = GetTimerInterval(_speed);
+                _timer.Interval = TimeSpan.FromMilliseconds(GetTimerInterval(_speed));
             }
         }
 
@@ -63,8 +100,16 @@ namespace Smart_Road
         /// </summary>
         private void UpdateSensorData()
         {
-            var sensorData = GenerateSensorData();
-            OnSensorDataUpdated?.Invoke(sensorData);
+            try
+            {
+                var sensorData = GenerateSensorData();
+                SensorDataUpdated?.Invoke(sensorData);
+            }
+            catch (Exception ex)
+            {
+                // H-4: 구독자 예외로 Timer 중단 방지
+                System.Diagnostics.Debug.WriteLine($"[DataGenerator] Error in UpdateSensorData: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -123,11 +168,11 @@ namespace Smart_Road
         private double GenerateTemperature(int hour)
         {
             // 새벽 2~6시: 저온(-5 기준), 그 외: 고온(10 기준)
-            int tempBase = (hour >= 2 && hour <= 6) ? -5 : 10;
+            int tempBase = (hour >= 2 && hour <= 6) ? TEMP_BASE_LOW : TEMP_BASE_HIGH;
             double temperature = tempBase + (_rng.NextDouble() * 10 - 5);
 
-            // 범위 제한: -10 ~ 35°C
-            return Math.Max(-10, Math.Min(35, temperature));
+            // 범위 제한
+            return Math.Max(MIN_TEMPERATURE, Math.Min(MAX_TEMPERATURE, temperature));
         }
 
         /// <summary>
@@ -135,15 +180,15 @@ namespace Smart_Road
         /// </summary>
         private double GenerateRainfall()
         {
-            return (_rng.Next(0, 10) < 3) ? _rng.NextDouble() * 20 : 0.0;
+            return (_rng.Next(0, 10) < (int)(RAINFALL_PROBABILITY * 10)) ? _rng.NextDouble() * 20 : 0.0;
         }
 
         /// <summary>
-        /// 풍속 생성 (0 ~ 20 m/s)
+        /// 풍속 생성
         /// </summary>
         private double GenerateWindSpeed()
         {
-            return _rng.NextDouble() * 20;
+            return _rng.NextDouble() * MAX_WIND_SPEED;
         }
 
         #endregion
@@ -155,10 +200,11 @@ namespace Smart_Road
         /// </summary>
         private string GetRoadCondition(double temperature, double rainfall)
         {
-            if (temperature < 0 && rainfall > 0)
-                return "결빙";
-            if (temperature < 2 && rainfall > 5)
+            // H-2: 우선순위 수정 — 적설(저온+다량강수)을 먼저 평가
+            if (temperature < FREEZING_TEMP && rainfall > SNOW_RAINFALL)
                 return "적설";
+            if (temperature < FREEZING_TEMP && rainfall > 0)
+                return "결빙";
             if (rainfall > 0)
                 return "습윤";
             return "건조";
@@ -173,8 +219,9 @@ namespace Smart_Road
         /// </summary>
         private int GetWaitingCars(int hour)
         {
-            bool isRushHour = (hour >= 8 && hour <= 9) || (hour >= 18 && hour <= 19);
-            return isRushHour ? _rng.Next(5, 15) : _rng.Next(0, 8);
+            bool isRushHour = (hour >= RUSH_HOUR_START_1 && hour <= RUSH_HOUR_END_1) ||
+                              (hour >= RUSH_HOUR_START_2 && hour <= RUSH_HOUR_END_2);
+            return isRushHour ? _rng.Next(MIN_WAITING_CARS_RUSH, MAX_WAITING_CARS_RUSH) : _rng.Next(0, MAX_WAITING_CARS);
         }
 
         #endregion
@@ -186,7 +233,7 @@ namespace Smart_Road
         /// </summary>
         private double GetAvgSpeed(int waitingCars)
         {
-            if (waitingCars > 10)
+            if (waitingCars > WAITING_CARS_THRESHOLD)
                 return _rng.Next(5, 20);   // 정체 (5 ~ 20 km/h)
             else
                 return _rng.Next(30, 60);  // 원활 (30 ~ 60 km/h)
@@ -201,7 +248,8 @@ namespace Smart_Road
         /// </summary>
         private double GenerateVehicleSpeed()
         {
-            return _rng.Next(0, 90);
+            // M-5: 연속값으로 수정 (반환타입 double과 일관성)
+            return _rng.NextDouble() * MAX_VEHICLE_SPEED;
         }
 
         /// <summary>
@@ -209,7 +257,7 @@ namespace Smart_Road
         /// </summary>
         private bool GenerateWrongWay()
         {
-            return _rng.Next(0, 100) < 2;
+            return _rng.Next(0, 100) < WRONG_WAY_PROBABILITY;
         }
 
         /// <summary>
@@ -217,7 +265,7 @@ namespace Smart_Road
         /// </summary>
         private bool GeneratePedestrianRemaining()
         {
-            return _rng.Next(0, 100) < 15;
+            return _rng.Next(0, 100) < PEDESTRIAN_PROBABILITY;
         }
 
         #endregion

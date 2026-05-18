@@ -1,55 +1,84 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace Smart_Road
 {
-    /// <summary>
-    /// 센서 및 교통 데이터를 파일로 저장하는 관리 클래스
-    /// </summary>
     public class DataManager
     {
-        // 실시간으로 들어오는 데이터들을 차곡차곡 쌓아두는 저장소(리스트)
-        private List<TrafficUpdateEventArgs> _history = new List<TrafficUpdateEventArgs>();
+        // 1. 스레드 동기화를 위한 락 객체 (여러 곳에서 동시에 접근할 때 터지는 것 방지)
+        private readonly object _lock = new object();
+
+        // 2. 메모리 상한선 설정 (예: 10,000개 이상 쌓이면 강제 저장 유도 등으로 확장 가능)
+        private readonly List<TrafficUpdateEventArgs> _history = new List<TrafficUpdateEventArgs>();
 
         /// <summary>
-        /// 새로운 데이터를 리스트에 기록함 (1초마다 호출 예정)
+        /// 데이터를 기록할 때 스레드 안전성(Thread-Safety) 보장
         /// </summary>
         public void RecordData(TrafficUpdateEventArgs data)
         {
-            _history.Add(data);
-        }
+            if (data == null) return;
 
-        /// <summary>
-        /// 쌓인 데이터를 JSON 파일 형식으로 저장
-        /// </summary>
-        public void SaveToJson(string filePath)
-        {
-            // 읽기 편하도록 들여쓰기 설정 추가
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            string jsonString = JsonSerializer.Serialize(_history, options);
-
-            // 파일 생성 및 쓰기
-            File.WriteAllText(filePath, jsonString);
-        }
-
-        /// <summary>
-        /// 쌓인 데이터를 CSV(엑셀 호환) 파일 형식으로 저장
-        /// </summary>
-        public void SaveToCsv(string filePath)
-        {
-            // 스트림라이터를 열어서 파일 쓰기 시작
-            using (StreamWriter writer = new StreamWriter(filePath))
+            lock (_lock)
             {
-                // 1행: 엑셀에서 제목이 될 헤더 부분 작성
-                writer.WriteLine("CurrentState,EfficiencyScore,SafetyScore,Temp,Rainfall,RoadCondition,AvgSpeed");
+                _history.Add(data);
+            }
+        }
 
-                // 리스트를 돌면서 데이터 한 줄씩 뽑아내기
-                foreach (var item in _history)
+        /// <summary>
+        /// 파일 쓰기 실패에 대비한 예외 처리 및 디렉토리 자동 생성 포함
+        /// </summary>
+        public bool SaveToCsv(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath)) return false;
+
+            try
+            {
+                // 경로가 없으면 생성
+                string directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 {
-                    // 각 항목을 쉼표(,)로 구분해서 한 줄로 합쳐서 작성
-                    writer.WriteLine($"{item.CurrentState},{item.EfficiencyScore},{item.SafetyScore},{item.RawData.Temperature},{item.RawData.Rainfall},{item.RawData.RoadCondition},{item.RawData.AvgSpeed_GPS}");
+                    Directory.CreateDirectory(directory);
                 }
+
+                // 저장하는 동안 데이터가 추가되어 리스트가 변하는 것 방지 (복사본 생성)
+                List<TrafficUpdateEventArgs> snapshot;
+                lock (_lock)
+                {
+                    snapshot = _history.ToList();
+                }
+
+                if (snapshot.Count == 0) return false;
+
+                using (var writer = new StreamWriter(filePath))
+                {
+                    writer.WriteLine("Timestamp,CurrentState,EfficiencyScore,SafetyScore,Temp,Rainfall,RoadCondition,AvgSpeed");
+                    foreach (var item in snapshot)
+                    {
+                        // 날짜/시간 정보를 추가하여 데이터 식별력 강화
+                        writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss},{item.CurrentState},{item.EfficiencyScore},{item.SafetyScore},{item.RawData.Temperature},{item.RawData.Rainfall},{item.RawData.RoadCondition},{item.RawData.AvgSpeed_GPS}");
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // 실패 원인을 로그로 남기거나 팀원에게 알릴 수 있도록 처리
+                Console.WriteLine($"[Error] CSV 저장 실패: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 저장 후 메모리를 비워주는 기능을 분리하여 메모리 누수 방지
+        /// </summary>
+        public void ClearHistory()
+        {
+            lock (_lock)
+            {
+                _history.Clear();
             }
         }
     }

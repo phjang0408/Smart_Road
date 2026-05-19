@@ -13,7 +13,11 @@ namespace Smart_Road
         /// 핵심 모듈 및 시뮬레이션 제어 변수
         /// </summary>
         private DataGenerator _dataGenerator;
+        private TrafficController _trafficController;
+        private DataManager _dataManager;
         private SensorData _currentData;
+        private int _currentSafetyScore = 0;
+        private int _currentEfficiencyScore = 100;
 
         private DispatcherTimer _renderTimer;
 
@@ -39,6 +43,12 @@ namespace Smart_Road
 
         private bool _forceBlackIce = false;
         private int _emergencyTimer = 0;
+        private bool _isRushHourEnabled = true; // 혼잡 시간 모드 (기본값: 활성)
+        private bool _isDayRunning = false;     // 하루 시뮬레이션 진행 중
+
+        // 그래프 데이터
+        private List<double> _temperatureHistory = new List<double>();
+        private List<double> _rainfallHistory = new List<double>();
 
 
         // 리소스 캐싱해서 그리기 속도 단축
@@ -74,7 +84,9 @@ namespace Smart_Road
             InitializeComponent();
 
             btnToggleBlackIce.Click += BtnToggleBlackIce_Click;
+            btnToggleRushHour.Click += BtnToggleRushHour_Click;
             btnTriggerWrongWay.Click += BtnTriggerWrongWay_Click;
+            btnStartDay.Click += BtnStartDay_Click;
 
             btnSpeed1x.Click += BtnSpeed1x_Click;
             btnSpeed2x.Click += BtnSpeed2x_Click;
@@ -134,15 +146,47 @@ namespace Smart_Road
         {
             // Sensor data를 UI랑 동기화
             _dataGenerator = new DataGenerator();
+            _trafficController = new TrafficController(_dataGenerator);
+            _dataManager = new DataManager();
+
+            // TrafficController 이벤트 구독 (점수 기반 신호 제어)
+            _trafficController.TrafficUpdated += (s, e) =>
+            {
+                this.Dispatcher.Invoke(() =>
+                {
+                    // 점수 업데이트
+                    _currentSafetyScore = e.SafetyScore;
+                    _currentEfficiencyScore = e.EfficiencyScore;
+
+                    // 1. 데이터 저장 (DataManager)
+                    _dataManager.RecordData(e);
+
+                    // 2. 교통 혼잡도에 따라 신호 길이 및 속도 동적 조절
+                    // efficiencyScore 기반으로 신호 대기시간 승수 결정
+                    double signalMultiplier = e.EfficiencyScore < 40 ? 1.5 : (e.EfficiencyScore < 60 ? 1.2 : 1.0);
+                    double speedMultiplier = 1.0; // 기본값
+                    ApplyTrafficPolicy(signalMultiplier, speedMultiplier);
+                });
+            };
+
             _dataGenerator.SensorDataUpdated += (data) =>
             {
                 _currentData = data;
                 this.Dispatcher.Invoke(() =>
                 {
-                    if (data.IsWrongWay) TriggerEmergencyStop(); // 모듈 사용
+                    // 그래프 데이터 수집
+                    _temperatureHistory.Add(data.Temperature);
+                    _rainfallHistory.Add(data.Rainfall);
+
+                    if (data.IsWrongWay) TriggerEmergencyStop(); // 역주행 긴급 제어
                     UpdateUI();
+                    DrawGraph();
+                    UpdateGraphStats();
                 });
             };
+
+            _dataGenerator.DayCompleted += OnDayCompleted;
+
             _dataGenerator.Initialize();
         }
 
@@ -162,12 +206,41 @@ namespace Smart_Road
             string currentRoadCondition = _forceBlackIce ? "결빙" : (_currentData?.RoadCondition ?? "대기 중");
             bool isWrongWayActive = _emergencyTimer > 0;
 
+            // 블랙아이스 이펙트
+            rectBlackIceOverlay.Opacity = _forceBlackIce ? 0.25 : 0;
+
+            // 역주행 차량 표시
+            rectWrongWayCar.Visibility = (_currentData?.IsWrongWay ?? false) ? Visibility.Visible : Visibility.Hidden;
+
             if (_currentData != null)
             {
                 txtTemperature.Text = $"{_currentData.Temperature:F1} °C";
                 txtRainfall.Text = $"{_currentData.Rainfall:F1} mm/h";
+                txtWindSpeed.Text = $"{_currentData.WindSpeed:F1} m/s";
+                txtVehicleSpeed.Text = $"{_currentData.VehicleSpeed:F1} km/h";
+                txtAvgSpeed.Text = $"GPS 평균속도: {_currentData.AvgSpeed_GPS:F1} km/h";
+
+                // 역주행 상태 표시
+                txtWrongWay.Text = _currentData.IsWrongWay ? "역주행: 감지됨! ⚠" : "역주행: 없음";
+                txtWrongWay.Foreground = _currentData.IsWrongWay ? _brushRed : _brushGreen;
+
+                // 보행자 상태 표시
+                txtPedestrian.Text = _currentData.IsPedestrianRemaining ? "잔류 보행자: 있음 ⚠" : "잔류 보행자: 없음";
+                txtPedestrian.Foreground = _currentData.IsPedestrianRemaining ? _brushYellow : _brushGreen;
             }
             txtRoadCondition.Text = currentRoadCondition;
+
+            // Road Safety Score 표시
+            txtRoadSafetyScore.Text = $"Road Safety Score: {_currentSafetyScore}";
+            // 점수에 따라 색상 변경
+            if (_currentSafetyScore >= 100) // 긴급
+                txtRoadSafetyScore.Foreground = _brushRed;
+            else if (_currentSafetyScore >= 40) // 환경위험
+                txtRoadSafetyScore.Foreground = (Brush)new BrushConverter().ConvertFrom("#FF9500");
+            else if (_currentSafetyScore >= 10) // 혼잡
+                txtRoadSafetyScore.Foreground = _brushYellow;
+            else // 정상
+                txtRoadSafetyScore.Foreground = _brushGreen;
 
             switch (currentRoadCondition)
             {
@@ -215,10 +288,124 @@ namespace Smart_Road
         }
 
         /// <summary>
+        /// 그래프 그리기 (기온과 강수량)
+        /// </summary>
+        private void DrawGraph()
+        {
+            canvasGraph.Children.Clear();
+
+            if (_temperatureHistory.Count == 0) return;
+
+            double canvasWidth = canvasGraph.ActualWidth > 0 ? canvasGraph.ActualWidth : 350;
+            double canvasHeight = canvasGraph.ActualHeight > 0 ? canvasGraph.ActualHeight : 220;
+            double padding = 40;
+            double graphWidth = canvasWidth - 2 * padding;
+            double graphHeight = canvasHeight - 2 * padding;
+
+            // 축 그리기
+            Line xAxis = new Line { X1 = padding, Y1 = canvasHeight - padding, X2 = canvasWidth - padding, Y2 = canvasHeight - padding, Stroke = (Brush)new BrushConverter().ConvertFrom("#505070"), StrokeThickness = 2 };
+            Line yAxis = new Line { X1 = padding, Y1 = padding, X2 = padding, Y2 = canvasHeight - padding, Stroke = (Brush)new BrushConverter().ConvertFrom("#505070"), StrokeThickness = 2 };
+            canvasGraph.Children.Add(xAxis);
+            canvasGraph.Children.Add(yAxis);
+
+            // 축 레이블
+            TextBlock xLabel = new TextBlock { Text = "시간 →", Foreground = (Brush)new BrushConverter().ConvertFrom("#909090"), FontSize = 11 };
+            Canvas.SetLeft(xLabel, canvasWidth - 50);
+            Canvas.SetTop(xLabel, canvasHeight - 20);
+            canvasGraph.Children.Add(xLabel);
+
+            TextBlock yLabel = new TextBlock { Text = "온도 ↑", Foreground = (Brush)new BrushConverter().ConvertFrom("#909090"), FontSize = 11 };
+            Canvas.SetLeft(yLabel, 5);
+            Canvas.SetTop(yLabel, 5);
+            canvasGraph.Children.Add(yLabel);
+
+            // 기온 범위 설정
+            double minTemp = _temperatureHistory.Min();
+            double maxTemp = _temperatureHistory.Max();
+            if (maxTemp == minTemp) maxTemp = minTemp + 1;
+
+            // 기온 그래프 그리기 (파란색 - 선굵기 4)
+            for (int i = 0; i < _temperatureHistory.Count - 1; i++)
+            {
+                double x1 = padding + (i / (double)(_temperatureHistory.Count - 1)) * graphWidth;
+                double x2 = padding + ((i + 1) / (double)(_temperatureHistory.Count - 1)) * graphWidth;
+
+                double y1 = canvasHeight - padding - ((_temperatureHistory[i] - minTemp) / (maxTemp - minTemp)) * graphHeight;
+                double y2 = canvasHeight - padding - ((_temperatureHistory[i + 1] - minTemp) / (maxTemp - minTemp)) * graphHeight;
+
+                Line line = new Line { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Stroke = (Brush)new BrushConverter().ConvertFrom("#64B5F6"), StrokeThickness = 4 };
+                canvasGraph.Children.Add(line);
+            }
+
+            // 강수량 그래프 그리기 (초록색 - 선굵기 4, 스케일링)
+            double maxRainfall = Math.Max(_rainfallHistory.Max() + 1, 1);
+            for (int i = 0; i < _rainfallHistory.Count - 1; i++)
+            {
+                double x1 = padding + (i / (double)(_rainfallHistory.Count - 1)) * graphWidth;
+                double x2 = padding + ((i + 1) / (double)(_rainfallHistory.Count - 1)) * graphWidth;
+
+                double y1 = canvasHeight - padding - (_rainfallHistory[i] / maxRainfall) * (graphHeight * 0.4);
+                double y2 = canvasHeight - padding - (_rainfallHistory[i + 1] / maxRainfall) * (graphHeight * 0.4);
+
+                Line line = new Line { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Stroke = (Brush)new BrushConverter().ConvertFrom("#81C784"), StrokeThickness = 4 };
+                canvasGraph.Children.Add(line);
+            }
+        }
+
+        /// <summary>
+        /// 그래프 통계 업데이트
+        /// </summary>
+        private void UpdateGraphStats()
+        {
+            if (_temperatureHistory.Count == 0) return;
+
+            double maxTemp = _temperatureHistory.Max();
+            double minTemp = _temperatureHistory.Min();
+            double totalRainfall = _rainfallHistory.Sum();
+
+            txtGraphStats.Text = $"최고기온: {maxTemp:F1} °C | 최저기온: {minTemp:F1} °C | 누적강수: {totalRainfall:F1} mm";
+        }
+
+        /// <summary>
+        /// 하루 끝난 후 도로 상황 초기화 (차들은 유지)
+        /// </summary>
+        private void ResetRoadState()
+        {
+            // 신호등 모두 빨강으로
+            lightN_Red.Fill = lightS_Red.Fill = lightE_Red.Fill = lightW_Red.Fill = _brushRed;
+            lightN_Green.Fill = lightS_Green.Fill = lightE_Green.Fill = lightW_Green.Fill = _dimGreen;
+
+            // 도로 상태 초기화
+            txtRoadCondition.Text = "건조";
+            bdRoadCondition.Background = _bgDry;
+            txtRoadCondition.Foreground = _brushWhite;
+
+            // 상태 초기화
+            _currentSafetyScore = 0;
+            _currentEfficiencyScore = 100;
+            _forceBlackIce = false;
+            _emergencyTimer = 0;
+
+            // UI 초기화
+            btnToggleBlackIce.Content = "블랙아이스 모드 강제 실행";
+            btnToggleBlackIce.Background = (Brush)new BrushConverter().ConvertFrom("#FF9500");
+            txtActiveControl.Text = "정상 제어 중";
+            txtActiveControl.Foreground = _brushGreen;
+            txtRoadSafetyScore.Text = "Road Safety Score: 0";
+            txtRoadSafetyScore.Foreground = _brushGreen;
+
+            // 블랙아이스 오버레이 제거
+            rectBlackIceOverlay.Opacity = 0;
+            rectWrongWayCar.Visibility = Visibility.Hidden;
+        }
+
+        /// <summary>
         /// 30FPS로 렌더링
         /// </summary>
         private void RenderTimer_Tick(object sender, EventArgs e)
         {
+            // 시뮬레이션 진행 중이 아니면 차량 동작 안 함
+            if (!_isDayRunning) return;
             string currentRoadCondition = _forceBlackIce ? "결빙" : (_currentData?.RoadCondition ?? "건조");
             double conditionMultiplier = (currentRoadCondition == "결빙" || currentRoadCondition == "적설") ? 1.5 : 1.0;
 
@@ -409,29 +596,88 @@ namespace Smart_Road
 
         private void UpdateTrafficLightsUI(bool forceAllRed = false)
         {
-            // 신호등 동기화
+            // 신호등 동기화 (N/S/E/W 4개 방향)
             if (forceAllRed)
             {
-                lightNE_Red.Fill = lightSW_Red.Fill = lightNW_Red.Fill = lightSE_Red.Fill = _brushRed;
-                lightNE_Green.Fill = lightSW_Green.Fill = lightNW_Green.Fill = lightSE_Green.Fill = _dimGreen;
+                // 긴급 상황: 전방향 적색
+                lightN_Red.Fill = lightS_Red.Fill = lightE_Red.Fill = lightW_Red.Fill = _brushRed;
+                lightN_Green.Fill = lightS_Green.Fill = lightE_Green.Fill = lightW_Green.Fill = _dimGreen;
             }
             else if (_isNSGreen)
             {
-                lightNE_Red.Fill = lightSW_Red.Fill = _dimRed; lightNE_Green.Fill = lightSW_Green.Fill = _brushGreen;
-                lightNW_Red.Fill = lightSE_Red.Fill = _brushRed; lightNW_Green.Fill = lightSE_Green.Fill = _dimGreen;
+                // 남북 녹색, 동서 적색
+                lightN_Red.Fill = lightS_Red.Fill = _dimRed;
+                lightN_Green.Fill = lightS_Green.Fill = _brushGreen;
+
+                lightE_Red.Fill = lightW_Red.Fill = _brushRed;
+                lightE_Green.Fill = lightW_Green.Fill = _dimGreen;
             }
             else
             {
-                lightNE_Red.Fill = lightSW_Red.Fill = _brushRed; lightNE_Green.Fill = lightSW_Green.Fill = _dimGreen;
-                lightNW_Red.Fill = lightSE_Red.Fill = _dimRed; lightNW_Green.Fill = lightSE_Green.Fill = _brushGreen;
+                // 동서 녹색, 남북 적색
+                lightN_Red.Fill = lightS_Red.Fill = _brushRed;
+                lightN_Green.Fill = lightS_Green.Fill = _dimGreen;
+
+                lightE_Red.Fill = lightW_Red.Fill = _dimRed;
+                lightE_Green.Fill = lightW_Green.Fill = _brushGreen;
             }
         }
 
         /// <summary>
-        /// 버튼 구현 
+        /// 버튼 구현
         /// </summary>
         private void BtnToggleBlackIce_Click(object sender, RoutedEventArgs e) { SetBlackIceMode(!_forceBlackIce); }
+        private void BtnToggleRushHour_Click(object sender, RoutedEventArgs e)
+        {
+            _isRushHourEnabled = !_isRushHourEnabled;
+            _dataGenerator?.SetRushHourMode(_isRushHourEnabled);
+            btnToggleRushHour.Content = _isRushHourEnabled ? "혼잡 시간 모드 해제" : "혼잡 시간 모드 활성";
+            btnToggleRushHour.Background = _isRushHourEnabled ? (Brush)new BrushConverter().ConvertFrom("#6750A4") : _brushInactive;
+        }
         private void BtnTriggerWrongWay_Click(object sender, RoutedEventArgs e) { TriggerEmergencyStop(); }
+
+        private void BtnStartDay_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isDayRunning) return; // 이미 실행 중이면 무시
+
+            _isDayRunning = true;
+            _dataManager.ClearHistory();          // 새 하루 시작 전 데이터 초기화
+            _temperatureHistory.Clear();          // 그래프 데이터 초기화
+            _rainfallHistory.Clear();
+            canvasGraph.Children.Clear();         // 캔버스 초기화
+            _dataGenerator.StartDay();            // 하루 시뮬레이션 시작
+
+            btnStartDay.Content = "시뮬레이션 진행 중...";
+            btnStartDay.IsEnabled = false;
+        }
+
+        private void OnDayCompleted()
+        {
+            this.Dispatcher.Invoke(() =>
+            {
+                _isDayRunning = false;
+
+                // 하루 완료 시 자동 저장
+                bool isSaved = _dataManager.AutoSaveDay();
+
+                // 도로 상황 초기화 (신호등, 상태 등)
+                ResetRoadState();
+
+                // 그래프 데이터 유지 (최종 상태 표시)
+
+                // 상태 업데이트 (저장 완료)
+
+                // 버튼 복원
+                btnStartDay.Content = "▶ 하루 시뮬레이션 시작";
+                btnStartDay.IsEnabled = true;
+
+                MessageBox.Show(
+                    isSaved ? "하루 시뮬레이션이 완료되었습니다.\n데이터가 자동으로 저장되었습니다." : "하루 시뮬레이션이 완료되었습니다.\n데이터 저장에 실패했습니다.",
+                    "시뮬레이션 완료",
+                    MessageBoxButton.OK,
+                    isSaved ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            });
+        }
 
         private void BtnSpeed1x_Click(object sender, RoutedEventArgs e) { _currentSpeed = 1; _dataGenerator?.SetSpeed(1); UpdateSpeedButtonsUI(); }
         private void BtnSpeed2x_Click(object sender, RoutedEventArgs e) { _currentSpeed = 2; _dataGenerator?.SetSpeed(2); UpdateSpeedButtonsUI(); }

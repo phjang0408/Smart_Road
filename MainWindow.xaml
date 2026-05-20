@@ -193,9 +193,9 @@
                     <StackPanel>
                         <TextBlock Text="Manual Control &amp; Speed" Foreground="#A0A0B0" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,15"/>
 
-                        <Button x:Name="btnToggleBlackIce" Content="블랙아이스 모드 강제 실행" Height="40" Margin="0,0,0,10" Background="#FF9500" Foreground="White"/>
-                        <Button x:Name="btnToggleRushHour" Content="혼잡 시간 모드 해제" Height="40" Margin="0,0,0,10" Background="#6750A4" Foreground="White"/>
-                        <Button x:Name="btnTriggerWrongWay" Content="🚨 강제 역주행 시뮬레이션" Height="40" Margin="0,0,0,15" Background="#FF3B30" Foreground="White"/>
+                        <Button x:Name="btnToggleBlackIce" Content="블랙아이스 모드 강제 실행" Height="40" Margin="0,0,0,10" Background="#FF9500" Foreground="White" Click="BtnToggleBlackIce_Click"/>
+                        <Button x:Name="btnToggleRushHour" Content="혼잡 시간 모드 해제" Height="40" Margin="0,0,0,10" Background="#6750A4" Foreground="White" Click="BtnToggleRushHour_Click"/>
+                        <Button x:Name="btnTriggerWrongWay" Content="🚨 강제 역주행 시뮬레이션" Height="40" Margin="0,0,0,15" Background="#FF3B30" Foreground="White" Click="BtnTriggerWrongWay_Click"/>
 
                         <TextBlock Text="물리 엔진 배속 설정" Foreground="#707080" FontSize="12" Margin="0,0,0,10"/>
                         <Grid>

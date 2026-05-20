@@ -255,7 +255,14 @@ namespace Smart_Road
             }
 
             // 제어 모드 상태 표시
-            if (isEmergency)
+            if (_forceBlackIce) // 빙판모드 키면 강제
+            {
+                txtActiveControl.Text = "❄️ 환경 위험 (안전 제어)";
+                txtActiveControl.Foreground = _textIce;
+                bdActiveControl.BorderBrush = _textIce;
+                bdActiveControl.Background = (Brush)new BrushConverter().ConvertFrom("#102020");
+            }
+            else if (isEmergency)
             {
                 txtActiveControl.Text = "🚨 긴급 제어: 전 방향 정지!";
                 txtActiveControl.Foreground = _brushRed;
@@ -336,7 +343,12 @@ namespace Smart_Road
         private void DrawGraph()
         {
             canvasGraph.Children.Clear();
-            if (_temperatureHistory.Count == 0) return;
+            if (_temperatureHistory.Count == 0)
+            {
+                TextBlock tb = new TextBlock { Text = "시뮬레이션 데이터를 기다리는 중...", Foreground = _brushGraphLabel, HorizontalAlignment = HorizontalAlignment.Center };
+                canvasGraph.Children.Add(tb);
+                return;
+            }
 
             double canvasWidth = canvasGraph.ActualWidth > 0 ? canvasGraph.ActualWidth : 350;
             double canvasHeight = canvasGraph.ActualHeight > 0 ? canvasGraph.ActualHeight : 200;
@@ -398,7 +410,20 @@ namespace Smart_Road
         {
             if (!_isDayRunning) return;
 
-            double moveSpeed = _baseMoveSpeed * _policySpeedMultiplier * _currentSpeed;
+            double speedMultiplier = _policySpeedMultiplier;
+
+            if (_forceBlackIce)
+            {
+                speedMultiplier *= 0.4; // 블랙아이스면 속도를 강제로 60% 감소
+            }
+
+            if (!_isRushHourEnabled)
+            {
+                speedMultiplier *= 1.2; // 혼잡 모드 해제 시 속도 증가
+            }
+
+            double moveSpeed = _baseMoveSpeed * speedMultiplier * _currentSpeed;
+            //double moveSpeed = _baseMoveSpeed * _policySpeedMultiplier * _currentSpeed;
             int dynamicCooldown = _baseSpawnCooldown / _currentSpeed;
 
             // 긴급 제어 타이머 처리
@@ -485,6 +510,11 @@ namespace Smart_Road
                 if (car.X < -50 || car.X > 550 || car.Y < -50 || car.Y > 550) { car.IsActive = false; car.Shape.Visibility = Visibility.Hidden; }
             }
 
+            if (_emergencyTimer == 0 && (_currentData?.IsWrongWay ?? false) == false)
+            {
+                rectWrongWayCar.Visibility = Visibility.Hidden;
+            }
+
             // 위에서 카운트해 둔 리스트 개수를 바로 재사용
             if (_currentData != null) SyncAndReportTraffic(dynamicCooldown);
         }
@@ -552,21 +582,27 @@ namespace Smart_Road
             if (count >= 10) txtBlock.Foreground = _brushRed; else if (count >= 5) txtBlock.Foreground = _brushYellow; else txtBlock.Foreground = _brushGreen;
         }
 
-        private void BtnToggleBlackIce_Click(object sender, RoutedEventArgs e) { SetBlackIceMode(!_forceBlackIce); }
+        private void BtnToggleBlackIce_Click(object sender, RoutedEventArgs e)
+        {
+            _forceBlackIce = !_forceBlackIce;
+            UpdateUI();
+        }
 
         private void BtnToggleRushHour_Click(object sender, RoutedEventArgs e)
         {
             _isRushHourEnabled = !_isRushHourEnabled;
-            _dataGenerator?.SetRushHourMode(_isRushHourEnabled);
+            _dataGenerator?.SetRushHourMode(_isRushHourEnabled); // 가능한 경우 모듈에 전달
             btnToggleRushHour.Content = _isRushHourEnabled ? "혼잡 시간 모드 해제" : "혼잡 시간 모드 활성";
-            btnToggleRushHour.Background = _isRushHourEnabled ? (Brush)new BrushConverter().ConvertFrom("#6750A4") : _brushInactive;
+            UpdateUI();
         }
 
         private void BtnTriggerWrongWay_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                TriggerEmergencyStop(); // UI 강제 정지 연출
+                rectWrongWayCar.Visibility = Visibility.Visible;    // UI 시각화
+                TriggerEmergencyStop(); // 긴급 정지 발동
+                UpdateUI();
             }
             catch (Exception ex) { MessageBox.Show($"역주행 제어 실패: {ex.Message}"); }
         }
@@ -629,6 +665,8 @@ namespace Smart_Road
 
             rectBlackIceOverlay.Opacity = 0; rectWrongWayCar.Visibility = Visibility.Hidden;
             txtSignalTimer.Text = "대기 중"; pbSignalTimer.Value = 0;
+
+            UpdateUI();
         }
 
         private void BtnSpeed1x_Click(object sender, RoutedEventArgs e) { _currentSpeed = 1; _dataGenerator?.SetSpeed(1); UpdateSpeedButtonsUI(); }

@@ -1,8 +1,8 @@
-# UI & 물리 엔진 사용법
+# UI & 물리 엔진 사용법 및 개선사항 정리
 
 **담당:** 송성조
 
-**최종 업데이트:** 2026-05-20
+**최종 업데이트:** 2026-05-21
 
 **대상 파일:** `MainWindow.xaml`, `MainWindow.xaml.cs`
 
@@ -37,10 +37,11 @@ mainWindow.SetBlackIceMode(bool isActive);
 
 ## 2. 주요 작동 원리
 
-- **이벤트 기반 제어:** UI 내부 타이머를 삭제함. `TrafficController`의 신호 객체에서 제공하는 정지/출발 신호를 실시간 반영함.
-- **예측 기반 정지 (nextX, nextY):** 차를 무작정 이동시키는게 아니라, 다음 프레임의 위치를 미리 계산함. 그 위치에 정지선이나 앞차가 있으면 이동을 취소함.
-- **오브젝트 풀링:** `MAX_CARS(40대)` 제한이 있음. 화면에 차가 너무 많아지면 소환이 무시됨.
-- **렌더링 최적화 및 GC 부하 개선:** 매 프레임마다 리스트를 생성하지 않고, 각 방향별 고정된 크기의 리스트를 `.Clear()`시켜서 재활용함.
+- **배속 및 랙 방어 통합 (PassTime 구조):** UI(`MainWindow`)가 `DateTime.Now`를 활용하여 정밀한 현실 경과 시간(`realDeltaTime`)을 계산한 뒤, 설정된 배속을 곱해 가상 경과 시간(`simulatedDeltaTime`)을 도출한다. 이를 `TrafficController.PassTime(deltaTime)`으로 전달함으로써, `DateTime`를 사용한 구조와 함께 무한 대기 버그를 차단한다.
+- **참조 공유 및 데이터 오염 방지 스냅샷:** UI 초시계가 30FPS로 실시간 차감되도록 `TrafficController`로부터 신호등 객체의 원본 참조를 받아서 렌더링한다. 반면, 과거 데이터 무결성을 지키기 위해 `DataManager.RecordData` 시점에서 독립된 복사본(`.Clone()`)을 생성하여 적재함해서, UI 최적화와 CSV 저장 데이터 오염 문제를 동시에 해결한다.
+- **예측 기반 정지 (nextX, nextY):** 차를 무작정 이동시키는게 아니라, 다음 프레임의 위치를 미리 계산함. 그 위치에 정지선이나 앞차가 있으면 이동을 취소한다.
+- **오브젝트 풀링:** `MAX_CARS(40대)` 제한이 있다. 화면에 차가 너무 많아지면 소환이 무시된다.
+- **렌더링 최적화 및 GC 부하 개선:** 매 프레임마다 리스트를 생성하지 않고, 각 방향별 고정된 크기의 리스트를 `.Clear()`시켜서 재활용한다.
 
 ---
 
@@ -58,7 +59,56 @@ mainWindow.SetBlackIceMode(bool isActive);
 
 ---
 
-## 4. 주의사항
+## 4. 개선사항
+
+## 수동 강제 이벤트(BlackIce, WrongWay) 발동이 계산 로직과 동기화되지 않음
+
+**어떤 문제인지**
+UI에서 블랙아이스 강제실행 버튼 또는 역주행 시뮬레이션 버튼을 눌러도, UI상에서만 시각적으로 표시될 뿐 실제 안전위험도 및 신호 계산에 아무런 영향이 없음
+
+**왜 문제인가?**
+사용자에 의해 강제로 상황발생을 시킬 때, UI에는 강제적인 상황이 적용되지만 `TrafficController`는 이 사실을 모르고 있다. 컨트롤러는 블랙아이스가 강제로 발생되더라도 계속 맑은 날씨라고 생각해서 100점을 부여하는 문제가 있다.
+
+**어디 부분인지**
+
+- 파일: `MainWindow.xaml.cs` 라인 89-94 (강제 이벤트 메서드), 라인 369-378 (초기화 메서드)
+
+**개선을 어떻게 하면 좋을지**
+`TrafficController` 객체에게 강제상태를 표현하는 코드를 추가했다. 강제상황에 의한 타이머가 끝나거나, 시뮬레이션 하루가 끝나면 다시 강제상태를 해제하도록 설정했다.
+
+```csharp
+public void TriggerEmergencyStop()
+{
+    if (_emergencyTimer == 0)
+    {
+        _emergencyTimer = 90;
+        if (_trafficController != null) _trafficController.ForceWrongWay = true; // 컨트롤러에 통보
+        UpdateUI();
+    }
+}
+
+public void SetBlackIceMode(bool isActive)
+{
+    _forceBlackIce = isActive;
+    if (_trafficController != null) _trafficController.ForceBlackIce = isActive; // 컨트롤러에 통보
+    UpdateUI();
+}
+
+private void ResetRoadState()
+{
+    // ... 기존 코드 ...
+
+    // Controller에 있는 강제상황 flag를 다시 초기화
+    if (_trafficController != null)
+    {
+        _trafficController.ForceBlackIce = false;
+        _trafficController.ForceWrongWay = false;
+    }
+    // ... 이하 생략 ...
+}
+```
+
+## 5. 주의사항
 
 ### UI 스레드 접근
 
@@ -74,7 +124,13 @@ mainWindow.SetBlackIceMode(bool isActive);
 
 ---
 
-## 5. 버전 이력
+## 6. 버전 이력
+
+- **v2.1 (2026-05-21)** - 최적화 및 조원 백엔드 아키텍처 연동 고도화 (송성조):
+  - : `MainWindow`와 `TrafficController` 간의 `DateTime` 연산 충돌(시간 이중 차감) 및 무한 대기 무한루프 현상을 해결하기 위해 `PassTime` 동기화 구조 추가.
+  - 신호등 참조 공유로 인해 과거 24시간 저장 데이터가 전부 최종값으로 덮어씌워지던 데이터 무결성 문제를 해결하기 위해, `DataManager.RecordData` 시점에서의 독립된 `.Clone()` 적재 로직 제안.
+  - '블랙아이스 강제 실행' 및 '강제 역주행 시뮬레이션' 버튼 클릭 시, `TrafficController`에 즉각적으로 플래그를 전달하도록 연동해서, 점수 및 신호 연장 제어가 정상적으로 작동하도록 개선.
+  - 시뮬레이션 극초반 데이터가 부족할 때(데이터 개수 1개 이하) 발생할 수 있는 그래프 연산 에러 방어 코드 추가. (0/0 상황 방지)
 
 - **v2.0 (2026-05-20):**
   - UI가 스스로 신호를 계산하는 문제를 개선. `TrafficController`의 신호 이벤트를 수신하여 동기화시킴.

@@ -4,57 +4,74 @@ using System.Threading.Tasks;
 
 namespace Smart_Road
 {
-	public class DataTestRunner
-	{
-		public void RunTest()
-		{
-			var manager = new DataManager();
+    public class DataTestRunner
+    {
+        public void RunTest()
+        {
+            var manager = new DataManager();
 
-			// 1. 기본 데이터 입력 테스트
-			Console.WriteLine("테스트 시작: 데이터를 기록 중...");
-			for (int i = 0; i < 10; i++)
-			{
-				manager.RecordData(CreateMockData(i));
-			}
+            // 1. 정상적으로 데이터가 입력되는지 확인하는 테스트
+            Console.WriteLine("테스트 시작: 데이터를 기록 중...");
+            for (int i = 0; i < 10; i++)
+            {
+                manager.RecordData(CreateMockData(i));
+            }
 
-			// 2. 멀티스레드 테스트 (동시에 100개의 데이터 병렬기록)
-			Parallel.For(0, 100, i =>
-			{
-				manager.RecordData(CreateMockData(i + 100));
-			});
+            // 2. 여러 스레드에서 동시에 접근해도 에러가 안 나는지 검증 (동기화 테스트)
+            Parallel.For(0, 100, i =>
+            {
+                manager.RecordData(CreateMockData(i + 100));
+            });
 
-			// 3. 파일 저장 테스트 (로컬 디스크 저장 확인)
-			string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-			string csvFile = Path.Combine(desktopPath, "SmartRoad_Test_Result.csv");
+            // 3. 누적된 데이터를 실제 바탕화면에 파일로 생성해 보는 테스트
+            string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string csvFile = Path.Combine(desktopPath, "SmartRoad_Test_Result.csv");
 
-			bool isSaved = manager.SaveToCsv(csvFile);
+            bool isSaved = manager.SaveToCsv(csvFile);
 
-			if (isSaved)
-			{
-				Console.WriteLine($"성공: {csvFile}에 데이터가 저장되었습니다.");
-			}
-			else
-			{
-				Console.WriteLine("실패: 파일 저장 중에 오류가 발생했습니다.");
-			}
-		}
+            if (isSaved)
+            {
+                Console.WriteLine($"성공: {csvFile}에 데이터가 저장되었습니다.");
+            }
+            else
+            {
+                Console.WriteLine("실패: 파일 저장 중에 오류가 발생했습니다.");
+            }
+        }
 
-		// 목데이터 클래스 샘플을 생성 및 검사 타입 데이터 설정
-		private TrafficUpdateEventArgs CreateMockData(int index)
-		{
-			return new TrafficUpdateEventArgs
-			{
-				CurrentState = (index % 2 == 0) ? TrafficState.Normal : TrafficState.Congested,
-				EfficiencyScore = 85 + (index % 15),
-				SafetyScore = 90 - (index % 20),
-				RawData = new SensorData
-				{
-					Temperature = 25.0,
-					Rainfall = 0.0,
-					RoadCondition = "건조",
-					AvgSpeed_GPS = 60.0 + index
-				}
-			};
-		}
-	}
+        // 실제 팀원들이 넘겨주는 것과 똑같은 형태의 가짜(Mock) 데이터를 만드는 기능
+        private TrafficUpdateEventArgs CreateMockData(int index)
+        {
+            return new TrafficUpdateEventArgs
+            {
+                Timestamp = DateTime.Now,
+                CurrentState = (index % 2 == 0) ? TrafficState.Normal : TrafficState.Congested,
+                EfficiencyScore = 85 + (index % 15),
+                SafetyScore = 90 - (index % 20),
+
+                // 기존 테스트 코드에서 누락되어서 에러를 내던 신호등 객체 강제 초기화
+                Light_N = new TrafficLight { Color = LightColor.Green, RemainingTime = 30 },
+                Light_S = new TrafficLight { Color = LightColor.Green, RemainingTime = 30 },
+                Light_E = new TrafficLight { Color = LightColor.Red, RemainingTime = 0 },
+                Light_W = new TrafficLight { Color = LightColor.Red, RemainingTime = 0 },
+
+                // 센서 데이터 묶음 초기화
+                RawData = new SensorData
+                {
+                    Temperature = 25.0,
+                    Rainfall = 0.0,
+                    WindSpeed = 2.5,
+                    RoadCondition = "건조",
+                    WaitingCars_N = 5,
+                    WaitingCars_S = 3,
+                    WaitingCars_E = 8,
+                    WaitingCars_W = 2,
+                    VehicleSpeed = 45.5,
+                    IsWrongWay = false,
+                    IsPedestrianRemaining = false,
+                    AvgSpeed_GPS = 60.0 + index
+                }
+            };
+        }
+    }
 }

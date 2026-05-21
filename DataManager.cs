@@ -70,7 +70,8 @@ namespace Smart_Road
                         double gpsSpeed = item.RawData?.AvgSpeed_GPS ?? 0;
 
                         // 시간 포맷을 맞춰서 콤마로 구분해 한 줄씩 작성
-                        writer.WriteLine($"{item.Timestamp:yyyy-MM-dd HH:mm:ss},{item.CurrentState},{item.EfficiencyScore},{item.SafetyScore}," +
+                        // Timestamp를 쌍따옴표로 감싸서 CSV 구조 보호 (공백 포함)
+                        writer.WriteLine($"\"{item.Timestamp:yyyy-MM-dd HH:mm:ss}\",{item.CurrentState},{item.EfficiencyScore},{item.SafetyScore}," +
                             $"{temp},{rain},{wind},{road},{vSpeed},{wrongWay},{ped},{gpsSpeed}," +
                             $"{signalN},{signalS},{signalE},{signalW}");
                     }

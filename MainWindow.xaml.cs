@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,6 +23,9 @@ namespace Smart_Road
 
         private int _currentSafetyScore = 0;
         private int _currentEfficiencyScore = 100;
+
+        private DateTime _lastTickTime = DateTime.Now;
+        
         private bool _forceBlackIce = false;
         private int _emergencyTimer = 0;
         private bool _isRushHourEnabled = true;
@@ -116,12 +120,22 @@ namespace Smart_Road
         /// <summary>
         /// 역주행 감지 시 3초 긴급 정지
         /// </summary>
-        public void TriggerEmergencyStop() { if (_emergencyTimer == 0) { _emergencyTimer = 90; UpdateUI(); } }
+        public void TriggerEmergencyStop() {
+            if (_emergencyTimer == 0) {
+                _emergencyTimer = 90;
+                if (_trafficController != null) _trafficController.ForceWrongWay = true;
+                UpdateUI();
+            }
+        }
 
         /// <summary>
         /// 블랙아이스 모드 수동 전환
         /// </summary>
-        public void SetBlackIceMode(bool isActive) { _forceBlackIce = isActive; UpdateUI(); }
+        public void SetBlackIceMode(bool isActive) {
+            _forceBlackIce = isActive;
+            if (_trafficController != null) _trafficController.ForceBlackIce = isActive;
+            UpdateUI();
+        }
 
         /// <summary>
         /// 오브젝트 풀링 초기화
@@ -186,13 +200,17 @@ namespace Smart_Road
                     _currentSafetyScore = e.SafetyScore;
                     _currentEfficiencyScore = e.EfficiencyScore;
 
-                    _dataManager.RecordData(e); // 데이터 저장
+                    if (e.RawData != null)
+                    {
+                        _dataManager.RecordData(e);     // 데이터 저장
+                    }
 
                     // 점수가 낮으면 통과 속도 감속 (혼잡 반영)
                     double speedMultiplier = e.EfficiencyScore < 60 ? 0.8 : 1.0;
                     ApplyTrafficPolicy(speedMultiplier);
 
                     UpdateTrafficLightsUI();
+                    UpdateUI();
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[UI] 정책 업데이트 오류: {ex.Message}"); }
             });
@@ -222,7 +240,7 @@ namespace Smart_Road
             bool isEmergency = _emergencyTimer > 0 || _lastTrafficArgs?.CurrentState == TrafficState.Emergency;
 
             rectBlackIceOverlay.Opacity = _forceBlackIce ? 0.25 : 0;
-            rectWrongWayCar.Visibility = (_currentData?.IsWrongWay ?? false) ? Visibility.Visible : Visibility.Hidden;
+            rectWrongWayCar.Visibility = ((_currentData?.IsWrongWay ?? false) || isEmergency) ? Visibility.Visible : Visibility.Hidden;
 
             // 센서 데이터 텍스트 바인딩
             if (_currentData != null)
@@ -343,7 +361,7 @@ namespace Smart_Road
         private void DrawGraph()
         {
             canvasGraph.Children.Clear();
-            if (_temperatureHistory.Count == 0)
+            if (_temperatureHistory.Count <= 1)
             {
                 TextBlock tb = new TextBlock { Text = "시뮬레이션 데이터를 기다리는 중...", Foreground = _brushGraphLabel, HorizontalAlignment = HorizontalAlignment.Center };
                 canvasGraph.Children.Add(tb);
@@ -410,6 +428,13 @@ namespace Smart_Road
         {
             if (!_isDayRunning) return;
 
+            DateTime now = DateTime.Now;
+            double realDeltaTime = (now - _lastTickTime).TotalSeconds;
+            _lastTickTime = now;
+
+            double simulatedDeltaTime = realDeltaTime * _currentSpeed;  // 배속 고려
+            _trafficController?.PassTime(simulatedDeltaTime);
+
             double speedMultiplier = _policySpeedMultiplier;
 
             if (_forceBlackIce)
@@ -432,7 +457,11 @@ namespace Smart_Road
             {
                 isEmergencyStop = true;
                 _emergencyTimer--;
-                if (_emergencyTimer == 0) UpdateUI();
+                if (_emergencyTimer == 0)
+                {
+                    if (_trafficController != null) _trafficController.ForceWrongWay = false;   // 3초 지나면 강제상태 해제
+                    UpdateUI();
+                }
             }
 
             // 쿨다운 갱신
@@ -617,6 +646,7 @@ namespace Smart_Road
                 _dataManager?.ClearHistory();
                 _temperatureHistory.Clear(); _rainfallHistory.Clear(); canvasGraph.Children.Clear();
 
+                _lastTickTime = DateTime.Now;
                 _dataGenerator?.StartDay();
 
                 btnStartDay.Content = "시뮬레이션 진행 중..."; btnStartDay.IsEnabled = false;
@@ -658,6 +688,12 @@ namespace Smart_Road
             _currentSafetyScore = 0; _currentEfficiencyScore = 100;
             _forceBlackIce = false; _emergencyTimer = 0;
             _lastTrafficArgs = null;
+
+            if (_trafficController != null)
+            {
+                _trafficController.ForceBlackIce = false;
+                _trafficController.ForceWrongWay = false;
+            }
 
             btnToggleBlackIce.Content = "블랙아이스 모드 강제 실행"; btnToggleBlackIce.Background = (Brush)new BrushConverter().ConvertFrom("#FF9500");
             txtActiveControl.Text = "정상 제어 중"; txtActiveControl.Foreground = _brushGreen;

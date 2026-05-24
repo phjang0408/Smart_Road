@@ -3,20 +3,31 @@ using System.Windows.Threading;
 
 namespace Smart_Road
 {
+    // 가상 센서 데이터를 생성하는 모듈
+    // 기상 센서, 지자기 센서, 레이더 센서 등을 시뮬레이션하고
+    // 이들 사이의 종속성을 구현하여 현실적인 데이터 생성
     public class DataGenerator : IDisposable
     {
+        // 난수 생성기
         private readonly Random _rng;
+        // 시뮬레이션 타이머 (배속에 따라 interval 조정)
         private DispatcherTimer _timer;
-        private int _speed = 1; // 배속 (1x, 2x, 4x)
-        private bool _rushHourEnabled = true; // 혼잡 시간 모드
+        // 시뮬레이션 배속 (1x, 2x, 4x)
+        private int _speed = 1;
+        // 혼잡 시간 모드 활성화 여부
+        private bool _rushHourEnabled = true;
+        // 역주행 강제 조건
+        private bool _forceWrongWay = false;
 
-        // 시뮬레이션 시간 및 날씨 상태 (구조적 날씨)
-        private int _simHour = 0;           // 시뮬레이션 현재 시각 (0~23)
-        private bool _isDayRainy = false;   // 오늘 비 오는 날 여부
-        private double _dayMinTemp;         // 오늘 최저기온 (새벽 4시)
-        private double _dayMaxTemp;         // 오늘 최고기온 (오후 2시)
+        // 시뮬레이션 현재 시각 (분 단위, 0~1440분 = 0~24시간)
+        private double _simMinutes = 0;
+        // 오늘 비 오는 날 여부
+        private bool _isDayRainy = false;
+        // 오늘 최저기온 (새벽 4시경)
+        private double _dayMinTemp;
+        // 오늘 최고기온 (오후 2시경)
+        private double _dayMaxTemp;
 
-        // 상수 (매직 넘버 상수화)
         private const int MIN_TEMPERATURE = -10;
         private const int MAX_TEMPERATURE = 35;
         private const int TEMP_BASE_LOW = -5;
@@ -43,10 +54,7 @@ namespace Smart_Road
             _rng = rng ?? new Random();
         }
 
-        // SensorData 갱신 시 발행하는 이벤트
         public event Action<SensorData> SensorDataUpdated;
-
-        // 하루(24시간) 시뮬레이션 완료 시 발행하는 이벤트
         public event Action DayCompleted;
 
         /// <summary>
@@ -54,44 +62,49 @@ namespace Smart_Road
         /// </summary>
         public void Initialize()
         {
-            _simHour = 0;
+            _simMinutes = 0;
             StartNewDay();
         }
 
-        /// <summary>
-        /// 하루 시뮬레이션 시작 — 타이머를 시작하고 24시간 데이터 생성
-        /// </summary>
+        // 하루 시뮬레이션 시작
+        // 타이머를 설정하고 센서 데이터 업데이트를 시작함
+        // 배속에 따라 타이머 주기가 조정됨
         public void StartDay()
         {
-            if (_timer != null) return;  // 이미 실행 중이면 무시
+            // 이미 타이머가 실행 중이면 중복 시작 방지
+            if (_timer != null) return;
 
-            _simHour = 0;
+            // 시뮬레이션 시간 초기화
+            _simMinutes = 0;
+            // 새 날씨 조건 설정
             StartNewDay();
 
+            // 타이머 생성 및 설정
             _timer = new DispatcherTimer();
             _timer.Interval = TimeSpan.FromMilliseconds(GetTimerInterval(_speed));
             _timer.Tick += OnTimerTick;
             _timer.Start();
         }
 
-        /// <summary>
-        /// Timer Tick 핸들러
-        /// </summary>
+        // 타이머 틱 이벤트 핸들러
+        // 주기적으로 호출되어 센서 데이터를 생성하고 발행
         private void OnTimerTick(object sender, EventArgs e)
         {
             UpdateSensorData();
         }
 
-        /// <summary>
-        /// Timer 정지
-        /// </summary>
+        // 타이머 정지
+        // 메모리 누수 방지를 위해 이벤트 핸들러를 명시적으로 해제
         public void Stop()
         {
             if (_timer != null)
             {
-                _timer.Tick -= OnTimerTick;  // 이벤트 핸들러 해제 (메모리 누수 방지)
+                // 이벤트 핸들러 제거 (메모리 누수 방지)
+                _timer.Tick -= OnTimerTick;
+                // 타이머 중지
                 _timer.Stop();
-                _timer = null;  // H-1: null 초기화로 dispose 상태 명시
+                // null 초기화로 dispose 상태 명시
+                _timer = null;
             }
         }
 
@@ -104,11 +117,11 @@ namespace Smart_Road
         }
 
         /// <summary>
-        /// 현재 시뮬레이션 시각 반환 (0~23)
+        /// 현재 시뮬레이션 시각 반환 (0~23시)
         /// </summary>
         public int GetCurrentHour()
         {
-            return _simHour;
+            return (int)(_simMinutes / 60.0);
         }
 
         /// <summary>
@@ -119,24 +132,25 @@ namespace Smart_Road
             get { return _timer != null; }
         }
 
-        /// <summary>
-        /// 배속 설정 (1, 2, 4)
-        /// </summary>
+        // 배속 설정 (1배, 2배, 4배만 가능)
+        // 배속을 변경하면 타이머의 주기도 함께 조정됨
         public void SetSpeed(int speed)
         {
+            // 유효한 배속 값 확인
             if (speed != 1 && speed != 2 && speed != 4)
                 throw new ArgumentException("배속은 1, 2, 4만 가능합니다.");
 
             _speed = speed;
+            // 타이머가 실행 중이면 interval 조정
             if (_timer != null)
             {
                 _timer.Interval = TimeSpan.FromMilliseconds(GetTimerInterval(_speed));
             }
         }
 
-        /// <summary>
-        /// 혼잡 시간 모드 설정
-        /// </summary>
+        // 혼잡 시간 모드 설정
+        // true이면 8~9시, 18~19시에 높은 차량 대기 수 생성
+        // false이면 혼잡 시간 구분 없이 일정한 차량 대기 수 생성
         public void SetRushHourMode(bool enabled)
         {
             _rushHourEnabled = enabled;
@@ -175,53 +189,61 @@ namespace Smart_Road
             return 2000 / speed; // 1x=2000ms, 2x=1000ms, 4x=500ms
         }
 
-        /// <summary>
-        /// SensorData 생성 및 이벤트 발행
-        /// </summary>
+        // 센서 데이터 생성 및 이벤트 발행
+        // 매 타이머 틱마다 호출되어 현재 시간의 센서 데이터를 생성하고 구독자에게 전달
         private void UpdateSensorData()
         {
             try
             {
-                // 하루 완료 시 더 이상 처리하지 않음
-                if (_simHour >= 24) return;
+                // 하루 완료 조건 확인 (1440분 = 24시간)
+                if (_simMinutes >= 1440) return;
 
-                // 먼저 현재 시간의 데이터 생성
+                // 현재 시간의 센서 데이터 생성
                 var sensorData = GenerateSensorData();
+                // SensorDataUpdated 이벤트 발행 (UI와 TrafficController가 구독)
                 SensorDataUpdated?.Invoke(sensorData);
 
-                // 그 다음 시뮬레이션 시간 진행 (매 tick마다 1시간 증가)
-                _simHour++;
-                if (_simHour >= 24)
+                // 시뮬레이션 시간 진행 (매 tick마다 5분씩 증가)
+                // 24시간 = 1440분, 5분씩 증가하면 총 288번의 업데이트
+                _simMinutes += 5;
+
+                // 하루 완료 확인
+                if (_simMinutes >= 1440)
                 {
+                    // 타이머 중지
                     Stop();
+                    // DayCompleted 이벤트 발행 (UI가 구독하여 저장 처리)
                     DayCompleted?.Invoke();
                 }
             }
             catch (Exception ex)
             {
-                // H-4: 구독자 예외로 Timer 중단 방지
+                // 구독자의 예외로 인해 타이머가 중단되지 않도록 예외 처리
                 System.Diagnostics.Debug.WriteLine($"[DataGenerator] Error in UpdateSensorData: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// 센서 데이터 생성 (메인 로직)
-        /// </summary>
+        // 센서 데이터 생성 (메인 로직)
+        // 기상 센서, 노면 상태, 대기 차량, GPS 속도, 레이더 데이터를 모두 생성
+        // 이들 사이의 종속성을 구현하여 현실적인 데이터 반환
         private SensorData GenerateSensorData()
         {
+            // 현재 시간(0~24) 계산
+            double currentHour = _simMinutes / 60.0;
+
             // Step 1: 기상 센서 생성 (사인 곡선 기반 일교차)
             double temperature = GenerateTemperature();
             double rainfall = GenerateRainfall();
             double windSpeed = GenerateWindSpeed();
 
             // Step 2: 노면 상태 종속 생성
-            string roadCondition = GetRoadCondition(temperature, rainfall);
+            RoadConditionType roadCondition = GetRoadCondition(temperature, rainfall);
 
-            // Step 3: 지자기 대기 차량 수 (_simHour 사용)
-            int waitingCars_N = GetWaitingCars(_simHour);
-            int waitingCars_S = GetWaitingCars(_simHour);
-            int waitingCars_E = GetWaitingCars(_simHour);
-            int waitingCars_W = GetWaitingCars(_simHour);
+            // Step 3: 지자기 대기 차량 수 (현재 시간 사용)
+            int waitingCars_N = GetWaitingCars(currentHour);
+            int waitingCars_S = GetWaitingCars(currentHour);
+            int waitingCars_E = GetWaitingCars(currentHour);
+            int waitingCars_W = GetWaitingCars(currentHour);
 
             // Step 4: GPS 구간 속도 (지자기에 종속)
             // 평균 대기 차량 수 기반
@@ -258,12 +280,15 @@ namespace Smart_Road
         /// </summary>
         private double GenerateTemperature()
         {
+            // 현재 시간(0~24) 계산
+            double currentHour = _simMinutes / 60.0;
+
             // 24시간 주기 코사인: 최고점 14시 (cos(0)=1), 최저점 약 2시 (cos(π)=-1)
-            // angle = (simHour - 14) / 24 * 2π
+            // angle = (currentHour - 14) / 24 * 2π
             // 14시 → angle=0 → cos(0)=1 → 최고
             // 2시 → angle≈π → cos(π)=-1 → 최저
 
-            double angle = (_simHour - 14.0) / 24.0 * 2.0 * Math.PI;
+            double angle = (currentHour - 14.0) / 24.0 * 2.0 * Math.PI;
             double cosValue = Math.Cos(angle);
 
             // cos(-1~1)를 (0~1) 범위로 정규화
@@ -309,22 +334,22 @@ namespace Smart_Road
         /// 노면 상태 결정 (기온과 강수량에 종속)
         /// 영하이면 강수 없어도 자연적으로 결빙됨
         /// </summary>
-        private string GetRoadCondition(double temperature, double rainfall)
+        private RoadConditionType GetRoadCondition(double temperature, double rainfall)
         {
             // 적설: 저온 + 다량강수(눈)
             if (temperature < FREEZING_TEMP && rainfall > SNOW_RAINFALL)
-                return "적설";
+                return RoadConditionType.Snow;
 
             // 결빙: 영하면 강수 조건 없이 자동 결빙 (맑은 날도 포함)
             if (temperature < FREEZING_TEMP)
-                return "결빙";
+                return RoadConditionType.Icy;
 
             // 습윤: 영상 + 강수
             if (rainfall > 0)
-                return "습윤";
+                return RoadConditionType.Wet;
 
             // 건조
-            return "건조";
+            return RoadConditionType.Dry;
         }
 
         #endregion
@@ -334,14 +359,14 @@ namespace Smart_Road
         /// <summary>
         /// 방향별 대기 차량 수 (혼잡 시간대 가중치)
         /// </summary>
-        private int GetWaitingCars(int hour)
+        private int GetWaitingCars(double currentHour)
         {
             // 혼잡 시간 모드가 비활성화되면 일반 트래픽만 반환
             if (!_rushHourEnabled)
                 return _rng.Next(0, MAX_WAITING_CARS);
 
-            bool isRushHour = (hour >= RUSH_HOUR_START_1 && hour <= RUSH_HOUR_END_1) ||
-                              (hour >= RUSH_HOUR_START_2 && hour <= RUSH_HOUR_END_2);
+            bool isRushHour = (currentHour >= RUSH_HOUR_START_1 && currentHour <= RUSH_HOUR_END_1) ||
+                              (currentHour >= RUSH_HOUR_START_2 && currentHour <= RUSH_HOUR_END_2);
             return isRushHour ? _rng.Next(MIN_WAITING_CARS_RUSH, MAX_WAITING_CARS_RUSH) : _rng.Next(0, MAX_WAITING_CARS);
         }
 
@@ -374,10 +399,19 @@ namespace Smart_Road
         }
 
         /// <summary>
-        /// 역주행 여부 (2% 확률)
+        /// 역주행 강제 조건 설정
+        /// </summary>
+        public void ForceWrongWay(bool force)
+        {
+            _forceWrongWay = force;
+        }
+
+        /// <summary>
+        /// 역주행 여부 (강제 조건 우선, 아니면 2% 확률)
         /// </summary>
         private bool GenerateWrongWay()
         {
+            if (_forceWrongWay) return true;
             return _rng.Next(0, 100) < WRONG_WAY_PROBABILITY;
         }
 

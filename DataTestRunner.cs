@@ -27,15 +27,15 @@ namespace Smart_Road
             string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
             string csvFile = Path.Combine(desktopPath, "SmartRoad_Test_Result.csv");
 
-            bool isSaved = manager.SaveToCsv(csvFile);
+            SaveResult saveResult = manager.SaveToCsv(csvFile);
 
-            if (isSaved)
+            if (saveResult.Success)
             {
-                Console.WriteLine($"성공: {csvFile}에 데이터가 저장되었습니다.");
+                Console.WriteLine($"성공: {saveResult.FilePath}에 데이터가 저장되었습니다.");
             }
             else
             {
-                Console.WriteLine("실패: 파일 저장 중에 오류가 발생했습니다.");
+                Console.WriteLine($"실패: {saveResult.Message}");
             }
         }
 
@@ -61,7 +61,7 @@ namespace Smart_Road
                     Temperature = 25.0,
                     Rainfall = 0.0,
                     WindSpeed = 2.5,
-                    RoadCondition = "건조",
+                    RoadCondition = RoadConditionType.Dry,
                     WaitingCars_N = 5,
                     WaitingCars_S = 3,
                     WaitingCars_E = 8,

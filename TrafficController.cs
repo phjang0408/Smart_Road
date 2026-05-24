@@ -10,21 +10,31 @@ namespace Smart_Road
         Emergency
     }
 
-    // IDisposable 구현으로 메모리 누수 방지 및 명시적 리소스 관리
+    // 교통 신호를 제어하는 모듈
+    // 센서 데이터를 받아서 교통 효율성과 안전성을 평가
+    // 그에 따라 신호를 제어하는 로직 구현
     public partial class TrafficController : IDisposable
     {
+        // 교통 효율성 점수 계산 상수들
+        // 기본값 100에서 대기 차량 수와 평균 속도에 따라 감점
         private const int EFFICIENCY_BASE_SCORE = 100;
         private const int PENALTY_PER_WAITING_CAR = 2;
         private const int SPEED_LIMIT = 50;
 
+        // 도로 안전성 점수 계산 상수들
+        // 기본값 0에서 위험 요소에 따라 가산
         private const int SAFETY_BASE_SCORE = 0;
         private const int WET_PENALTY = 10;
         private const int FREEZING_SNOW_PENALTY = 40;
         private const int PEDESTRIAN_PENALTY = 30;
         private const int WRONG_WAY_PENALTY = 100;
 
+        // 신호 시간 설정 (초 단위)
         private const int BASE_GREEN_TIME = 30;
         private const int BASE_YELLOW_TIME = 3;
+
+        // 시뮬레이션 배속 (1배, 2배, 4배)
+        private int _simulationSpeed = 1;
 
         public TrafficLight Light_N { get; private set; } = new TrafficLight();
         public TrafficLight Light_S { get; private set; } = new TrafficLight();
@@ -47,31 +57,72 @@ namespace Smart_Road
         private DataGenerator _generator;
         public event EventHandler<TrafficUpdateEventArgs> TrafficUpdated;
 
+        // 생성자
+        // DataGenerator로부터 센서 데이터를 받아 신호를 제어하도록 설정
         public TrafficController(DataGenerator generator)
         {
             _generator = generator;
+            // 센서 데이터 업데이트 이벤트 구독
             _generator.SensorDataUpdated += OnSensorDataUpdated;
 
+            // 초기 신호 방향 설정 (남북 방향부터 시작)
             isNorthSouthPhase = true;
             _lastStateChangeTime = DateTime.Now;
             InitializeDefaultLights();
         }
 
-        // 이벤트 구독 명시적 해제
+        // 시뮬레이션 배속 설정
+        // 배속 변경 시 진행 중인 신호의 남은 시간도 함께 조정
+        // 배속을 높이면 남은 시간도 단축되어 현실적인 신호 진행 구현
+        public void SetSimulationSpeed(int speed)
+        {
+            // 현재 남은 시간을 1배 기준으로 정규화
+            double normalizedTime = _currentPhaseTotalTime * _simulationSpeed;
+
+            // 새로운 배속에 맞게 다시 계산
+            _currentPhaseTotalTime = normalizedTime / (double)speed;
+
+            // 배속 업데이트
+            _simulationSpeed = speed;
+        }
+
+        // 신호 상태 완전히 초기화
+        // 새로운 하루 시뮬레이션 시작 시 호출하여 신호를 초기 상태로 리셋
+        public void Reset()
+        {
+            // 남북 방향 신호부터 시작
+            isNorthSouthPhase = true;
+            // 신호 변경 시각 기록
+            _lastStateChangeTime = DateTime.Now;
+            // 신호 시간을 배속에 맞게 설정
+            _currentPhaseTotalTime = BASE_GREEN_TIME / (double)_simulationSpeed;
+            // 신호 연장 플래그 초기화
+            _isExtendedThisPhase = false;
+            // 응급 모드 해제
+            _isEmergencyActive = false;
+            // 신호 색상 초기화
+            InitializeDefaultLights();
+        }
+
+        // 리소스 해제
+        // IDisposable 구현으로 메모리 누수 방지
         public void Dispose()
         {
             if (_generator != null)
             {
+                // 이벤트 핸들러 제거
                 _generator.SensorDataUpdated -= OnSensorDataUpdated;
             }
         }
 
         private void InitializeDefaultLights()
         {
-            Light_N.Color = LightColor.Green; Light_N.RemainingTime = BASE_GREEN_TIME;
-            Light_S.Color = LightColor.Green; Light_S.RemainingTime = BASE_GREEN_TIME;
+            int adjustedGreenTime = BASE_GREEN_TIME / _simulationSpeed;
+            Light_N.Color = LightColor.Green; Light_N.RemainingTime = adjustedGreenTime;
+            Light_S.Color = LightColor.Green; Light_S.RemainingTime = adjustedGreenTime;
             Light_E.Color = LightColor.Red;   Light_E.RemainingTime = 0;
             Light_W.Color = LightColor.Red;   Light_W.RemainingTime = 0;
+            _currentPhaseTotalTime = adjustedGreenTime;
         }
 
         public void PassTime(double deltaTime)
@@ -139,9 +190,8 @@ namespace Smart_Road
         {
             int score = SAFETY_BASE_SCORE;
 
-            // 상태 정보를 텍스트(문자열) 그대로 비교하여 처리
-            if (ForceBlackIce || data.RoadCondition == "결빙" || data.RoadCondition == "적설") score += FREEZING_SNOW_PENALTY;
-            else if (data.RoadCondition == "습윤") score += WET_PENALTY;
+            if (ForceBlackIce || data.RoadCondition == RoadConditionType.Icy || data.RoadCondition == RoadConditionType.Snow) score += FREEZING_SNOW_PENALTY;
+            else if (data.RoadCondition == RoadConditionType.Wet) score += WET_PENALTY;
 
             if (data.IsPedestrianRemaining) score += PEDESTRIAN_PENALTY;
             if (ForceWrongWay || data.IsWrongWay) score += WRONG_WAY_PENALTY;
@@ -166,8 +216,7 @@ namespace Smart_Road
                     return;
 
                 case TrafficState.EnvironmentalHazard:
-                    // 텍스트 기반 비교 유지
-                    if (ForceBlackIce || data.RoadCondition == "결빙" || data.RoadCondition == "적설")
+                    if (ForceBlackIce || data.RoadCondition == RoadConditionType.Icy || data.RoadCondition == RoadConditionType.Snow)
                         ExtendYellowLight(5);
                     if (data.IsPedestrianRemaining)
                         ExtendGreenLight(10);
@@ -240,14 +289,14 @@ namespace Smart_Road
                 if (Light_N.Color == LightColor.Green)
                 {
                     Light_N.Color = LightColor.Yellow; Light_S.Color = LightColor.Yellow;
-                    _currentPhaseTotalTime = BASE_YELLOW_TIME;
+                    _currentPhaseTotalTime = BASE_YELLOW_TIME / (double)_simulationSpeed;
                 }
                 else
                 {
                     Light_N.Color = LightColor.Red; Light_S.Color = LightColor.Red;
                     isNorthSouthPhase = false; // 동서 방향으로 교체
                     Light_E.Color = LightColor.Green; Light_W.Color = LightColor.Green;
-                    _currentPhaseTotalTime = BASE_GREEN_TIME;
+                    _currentPhaseTotalTime = BASE_GREEN_TIME / (double)_simulationSpeed;
                 }
             }
             else
@@ -255,14 +304,14 @@ namespace Smart_Road
                 if (Light_E.Color == LightColor.Green)
                 {
                     Light_E.Color = LightColor.Yellow; Light_W.Color = LightColor.Yellow;
-                    _currentPhaseTotalTime = BASE_YELLOW_TIME;
+                    _currentPhaseTotalTime = BASE_YELLOW_TIME / (double)_simulationSpeed;
                 }
                 else
                 {
                     Light_E.Color = LightColor.Red; Light_W.Color = LightColor.Red;
                     isNorthSouthPhase = true; // 남북 방향으로 교체
                     Light_N.Color = LightColor.Green; Light_S.Color = LightColor.Green;
-                    _currentPhaseTotalTime = BASE_GREEN_TIME;
+                    _currentPhaseTotalTime = BASE_GREEN_TIME / (double)_simulationSpeed;
                 }
             }
 
@@ -286,10 +335,16 @@ namespace Smart_Road
 
         private void SetAllRed()
         {
-            Light_N.Color = LightColor.Red; Light_N.RemainingTime = 99;
-            Light_S.Color = LightColor.Red; Light_S.RemainingTime = 99;
-            Light_E.Color = LightColor.Red; Light_E.RemainingTime = 99;
-            Light_W.Color = LightColor.Red; Light_W.RemainingTime = 99;
+            // 긴급 정지는 약 3초 유지 (배속 반영)
+            int emergencyDuration = 3;
+            int adjustedDuration = emergencyDuration / _simulationSpeed;
+
+            Light_N.Color = LightColor.Red; Light_N.RemainingTime = adjustedDuration;
+            Light_S.Color = LightColor.Red; Light_S.RemainingTime = adjustedDuration;
+            Light_E.Color = LightColor.Red; Light_E.RemainingTime = adjustedDuration;
+            Light_W.Color = LightColor.Red; Light_W.RemainingTime = adjustedDuration;
+
+            _currentPhaseTotalTime = adjustedDuration;
             _isEmergencyActive = true;
         }
 
@@ -297,7 +352,7 @@ namespace Smart_Road
         {
             if (!_isExtendedThisPhase && (Light_N.Color == LightColor.Yellow || Light_E.Color == LightColor.Yellow))
             {
-                _currentPhaseTotalTime += extra;
+                _currentPhaseTotalTime += extra / (double)_simulationSpeed;
                 _isExtendedThisPhase = true;
             }
         }
@@ -306,7 +361,7 @@ namespace Smart_Road
         {
             if (!_isExtendedThisPhase && (Light_N.Color == LightColor.Green || Light_E.Color == LightColor.Green))
             {
-                _currentPhaseTotalTime += extra;
+                _currentPhaseTotalTime += extra / (double)_simulationSpeed;
                 _isExtendedThisPhase = true;
             }
         }

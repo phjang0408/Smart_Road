@@ -137,6 +137,7 @@ namespace Smart_Road
             InitializeSystem();
             InitializeRenderLoop();
             UpdateSpeedButtonsUI();
+            new DataTestRunner().RunTest(); //데이터 저장 잘되는지 가짜데이터로 테스트
         }
 
         // 교통 효율 점수에 따른 차량 속도 조정

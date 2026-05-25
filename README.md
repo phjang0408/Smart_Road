@@ -67,9 +67,9 @@
    ```bash
    git clone [https://github.com/phjang0408/Smart_Road.git](https://github.com/phjang0408/Smart_Road.git)
    
-2. Visual Studio 2022를 실행하여 Smart_Road.sln 솔루션 파일을 엽니다.
+2. Visual Studio 2022를 실행하여 `Smart_Road.sln` 솔루션 파일을 엽니다.
 
-3. 상단의 빌드 대상을 Release 또는 Debug로 설정한 뒤 F5 키를 눌러 디버깅을 시작합니다.
+3. 상단의 빌드 대상을 `Release` 또는 `Debug`로 설정한 뒤 `F5` 키를 눌러 디버깅을 시작합니다.
 
 4. 우측 패널의 [▶ 하루(24h) 시뮬레이션 시작] 버튼을 클릭하면 24시간 주기의 교통 흐름 제어가 개시됩니다.
 
